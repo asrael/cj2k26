@@ -1,6 +1,29 @@
 [package]
 name = "cj2k26"
 version = "0.1.0"
+license = "MIT"
 edition = "2024"
 
 [dependencies]
+env_logger = "0.11"
+gilrs = "0.11"
+glam = "0.33"
+log = "0.4"
+pixels = "0.17"
+resid-rs = { git = "https://github.com/asrael/resid-rs" }
+tinyaudio = "2.0"
+winit = "0.30"
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = "debuginfo"
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
