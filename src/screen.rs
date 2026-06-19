@@ -27,7 +27,7 @@ impl Screen {
         Self {
             grid: Grid::default(),
             palette: Palette::default(),
-            sprites: Vec::with_capacity(4096),
+            sprites: Vec::new(),
             tilemaps: Vec::new(),
             window: None,
         }

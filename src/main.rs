@@ -9,10 +9,12 @@ mod tilemap;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use glam::IVec2;
 use log::error;
 use pixels::{Pixels, SurfaceTexture};
+use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -32,6 +34,10 @@ use tilemap::{Tilemap, Tileset};
 pub(crate) const GAME_W: usize = 240;
 pub(crate) const GAME_H: usize = 160;
 
+const MAX_FRAME: Duration = Duration::from_millis(100);
+const TICK: Duration = Duration::from_nanos(16_666_667);
+const TILE: i32 = 8;
+
 // palette colors by index
 const TRANSPARENT: u8 = 0;
 const ORANGE: u8 = 1;
@@ -42,13 +48,15 @@ struct Cj2k26 {
     pixels: Rc<RefCell<Option<Pixels<'static>>>>,
     screen: Screen,
     sfx: Option<Sfx>,
+    last: Option<Instant>,
+    accumulator: Duration,
 }
 
 impl Cj2k26 {
     fn update(&mut self) {
         for sprite in &mut self.screen.sprites {
-            let pos = sprite.bbox[0];
-            let dim = sprite.bbox[1];
+            let pos = sprite.pos;
+            let dim = sprite.dim;
             let mut bounced = false;
 
             let nx = pos.x + sprite.vel.x;
@@ -69,7 +77,7 @@ impl Cj2k26 {
                 bounced = true;
             }
 
-            sprite.bbox[0] += sprite.vel;
+            sprite.pos += sprite.vel;
 
             if bounced {
                 if let Some(sfx) = &self.sfx {
@@ -80,8 +88,8 @@ impl Cj2k26 {
     }
 
     fn draw(&mut self) {
-        let mut slot = self.pixels.borrow_mut();
-        let Some(pixels) = slot.as_mut() else {
+        let mut pixels = self.pixels.borrow_mut();
+        let Some(pixels) = pixels.as_mut() else {
             return;
         };
 
@@ -157,39 +165,34 @@ impl ApplicationHandler for Cj2k26 {
             IVec2::new(1, 1),
         ));
 
-        let mut tiles = vec![TRANSPARENT; 8 * 8];
-        tiles.resize(2 * 8 * 8, GRAY);
-        let tileset = Tileset::new(8, 8, tiles);
+        let mut tiles = vec![TRANSPARENT; (TILE * TILE) as usize];
+        tiles.resize((2 * TILE * TILE) as usize, GRAY);
 
-        let cols = GAME_W as i32 / 8;
-        let rows = GAME_H as i32 / 8;
+        let cols = GAME_W as i32 / TILE;
+        let rows = GAME_H as i32 / TILE;
         let mut cells = vec![0u16; (cols * rows) as usize];
+        let mut grid = Grid::new(IVec2::ZERO, cols, rows, TILE, TILE);
         for col in 0..cols {
-            cells[((rows - 2) * cols + col) as usize] = 1;
-            cells[((rows - 1) * cols + col) as usize] = 1;
-        }
-
-        let mut grid = Grid::new(IVec2::ZERO, cols, rows, 8, 8);
-        for (cell, &id) in cells.iter().enumerate() {
-            if id != 0 {
-                grid.set(cell as i32 % cols, cell as i32 / cols, true);
+            for row in [rows - 2, rows - 1] {
+                cells[(row * cols + col) as usize] = 1;
+                grid.set(col, row, true);
             }
         }
         screen.grid = grid;
 
-        screen
-            .tilemaps
-            .push(Tilemap::new(IVec2::ZERO, cols, rows, cells, tileset));
+        screen.tilemaps.push(Tilemap::new(
+            IVec2::ZERO,
+            cols,
+            rows,
+            cells,
+            Tileset::new(TILE, TILE, tiles),
+        ));
 
         window.request_redraw();
         screen.window = Some(window.clone());
 
         self.screen = screen;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.sfx = Some(Sfx::new());
-        }
+        self.sfx = Some(Sfx::new());
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -203,7 +206,19 @@ impl ApplicationHandler for Cj2k26 {
             }
 
             WindowEvent::RedrawRequested => {
-                self.update();
+                let now = Instant::now();
+                let dt = self
+                    .last
+                    .replace(now)
+                    .map(|prev| (now - prev).min(MAX_FRAME))
+                    .unwrap_or_default();
+                self.accumulator += dt;
+
+                while self.accumulator >= TICK {
+                    self.update();
+                    self.accumulator -= TICK;
+                }
+
                 self.draw();
 
                 if let Some(pixels) = self.pixels.borrow_mut().as_mut() {
@@ -219,8 +234,8 @@ impl ApplicationHandler for Cj2k26 {
             }
 
             WindowEvent::MouseInput { .. } | WindowEvent::KeyboardInput { .. } => {
-                if self.sfx.is_none() {
-                    self.sfx = Some(Sfx::new());
+                if let Some(sfx) = &self.sfx {
+                    sfx.resume();
                 }
             }
 

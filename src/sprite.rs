@@ -6,7 +6,8 @@ use crate::gfx::{Drawable, blit};
 #[derive(Clone, Default)]
 pub struct Sprite {
     pixels: Vec<u8>,
-    pub bbox: [IVec2; 2],
+    pub pos: IVec2,
+    pub dim: IVec2,
     pub vel: IVec2,
 }
 
@@ -19,7 +20,8 @@ impl Sprite {
         );
 
         Self {
-            bbox: [pos, IVec2::new(w, h)],
+            pos,
+            dim: IVec2::new(w, h),
             pixels,
             vel,
         }
@@ -28,6 +30,6 @@ impl Sprite {
 
 impl Drawable for Sprite {
     fn draw(&self, frame: &mut [u8], palette: &Palette) {
-        blit(frame, palette, self.bbox[0], self.bbox[1].x, &self.pixels);
+        blit(frame, palette, self.pos, self.dim.x, &self.pixels);
     }
 }
