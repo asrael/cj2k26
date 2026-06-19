@@ -1,7 +1,13 @@
+mod color;
+mod gfx;
+mod grid;
+mod screen;
 mod sfx;
+mod sprite;
+mod tilemap;
 
-use sfx::Sfx;
-
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use glam::IVec2;
@@ -13,38 +19,57 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-const GAME_W: usize = 240;
-const GAME_H: usize = 160;
+#[cfg(target_arch = "wasm32")]
+use pixels::PixelsBuilder;
+
+use gfx::Drawable;
+use grid::Grid;
+use screen::Screen;
+use sfx::Sfx;
+use sprite::Sprite;
+use tilemap::{Tilemap, Tileset};
+
+pub(crate) const GAME_W: usize = 240;
+pub(crate) const GAME_H: usize = 160;
 
 // palette colors by index
 const TRANSPARENT: u8 = 0;
 const ORANGE: u8 = 1;
+const GRAY: u8 = 2;
 
 #[derive(Default)]
 struct Cj2k26 {
-    pixels: Option<Pixels<'static>>,
+    pixels: Rc<RefCell<Option<Pixels<'static>>>>,
     screen: Screen,
     sfx: Option<Sfx>,
 }
 
 impl Cj2k26 {
     fn update(&mut self) {
-        for sprite in self.screen.sprites_mut() {
-            let mut bbox = sprite.bbox;
+        for sprite in &mut self.screen.sprites {
+            let pos = sprite.bbox[0];
+            let dim = sprite.bbox[1];
             let mut bounced = false;
 
-            if bbox[0].x < 0 || bbox[0].x + bbox[1].x > GAME_W as i32 {
+            let nx = pos.x + sprite.vel.x;
+            if nx < 0
+                || nx + dim.x > GAME_W as i32
+                || self.screen.grid.aabb(IVec2::new(nx, pos.y), dim)
+            {
                 sprite.vel.x = -sprite.vel.x;
                 bounced = true;
             }
 
-            if bbox[0].y < 0 || bbox[0].y + bbox[1].y > GAME_H as i32 {
+            let ny = pos.y + sprite.vel.y;
+            if ny < 0
+                || ny + dim.y > GAME_H as i32
+                || self.screen.grid.aabb(IVec2::new(pos.x, ny), dim)
+            {
                 sprite.vel.y = -sprite.vel.y;
                 bounced = true;
             }
 
-            bbox[0] += sprite.vel;
-            sprite.bbox = bbox;
+            sprite.bbox[0] += sprite.vel;
 
             if bounced {
                 if let Some(sfx) = &self.sfx {
@@ -54,133 +79,24 @@ impl Cj2k26 {
         }
     }
 
-    fn render(&mut self) {
-        let Some(pixels) = self.pixels.as_mut() else {
+    fn draw(&mut self) {
+        let mut slot = self.pixels.borrow_mut();
+        let Some(pixels) = slot.as_mut() else {
             return;
         };
 
         let frame = pixels.frame_mut();
 
         for pxl in frame.chunks_exact_mut(4) {
-            pxl.fill(0);
+            pxl.copy_from_slice(&[0, 0, 0, 0xFF]);
+        }
+
+        for tilemap in &self.screen.tilemaps {
+            tilemap.draw(frame, &self.screen.palette);
         }
 
         for sprite in &self.screen.sprites {
-            let pos = sprite.bbox[0];
-            let w = sprite.bbox[1].x;
-
-            for (i, &px) in sprite.pixels.iter().enumerate() {
-                if px == TRANSPARENT {
-                    continue;
-                }
-
-                let sx = pos.x + i as i32 % w;
-                let sy = pos.y + i as i32 / w;
-                if sx < 0 || sx >= GAME_W as i32 || sy < 0 || sy >= GAME_H as i32 {
-                    continue;
-                }
-
-                let idx = (sy as usize * GAME_W + sx as usize) * 4;
-                frame[idx..idx + 4].copy_from_slice(&self.screen.palette.rgba(px));
-            }
-        }
-    }
-}
-
-type Color = u32;
-
-trait Rgba {
-    fn rgba(&self) -> [u8; 4];
-}
-
-impl Rgba for Color {
-    fn rgba(&self) -> [u8; 4] {
-        [(self >> 16) as u8, (self >> 8) as u8, *self as u8, 0xFF]
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Palette([Color; 256]);
-
-impl Default for Palette {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Palette {
-    pub const fn new() -> Self {
-        Self([0; 256])
-    }
-
-    pub fn at(&self, index: u8) -> Color {
-        self.0[index as usize]
-    }
-
-    pub fn cycle(&self, base: u8, offset: u8) -> Color {
-        self.0[base.wrapping_add(offset) as usize]
-    }
-
-    pub fn index_of(&self, color: Color) -> Option<u8> {
-        self.0.iter().position(|&c| c == color).map(|i| i as u8)
-    }
-
-    pub fn set(&mut self, index: u8, color: Color) {
-        self.0[index as usize] = color;
-    }
-
-    pub fn rgba(&self, index: u8) -> [u8; 4] {
-        let c = self.0[index as usize];
-        c.rgba()
-    }
-}
-
-#[derive(Clone)]
-struct Screen {
-    palette: Palette,
-    sprites: Vec<Sprite>,
-    window: Option<Arc<Window>>,
-}
-
-impl Default for Screen {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Screen {
-    pub fn new() -> Self {
-        Self {
-            palette: Palette::default(),
-            sprites: Vec::with_capacity(4096),
-            window: None,
-        }
-    }
-
-    pub fn sprites_mut(&mut self) -> &mut Vec<Sprite> {
-        &mut self.sprites
-    }
-}
-
-#[derive(Clone, Default)]
-struct Sprite {
-    bbox: [IVec2; 2],
-    pixels: Vec<u8>,
-    vel: IVec2,
-}
-
-impl Sprite {
-    pub fn new(pos: IVec2, w: i32, h: i32, pixels: Vec<u8>, vel: IVec2) -> Self {
-        assert_eq!(
-            pixels.len(),
-            (w * h) as usize,
-            "sprite pixel buffer length must equal width * height"
-        );
-
-        Self {
-            bbox: [pos, IVec2::new(w, h)],
-            pixels,
-            vel,
+            sprite.draw(frame, &self.screen.palette);
         }
     }
 }
@@ -189,25 +105,51 @@ impl ApplicationHandler for Cj2k26 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let mut screen = Screen::new();
         let size = LogicalSize::new(1280, 720);
+        let attributes = Window::default_attributes()
+            .with_title("cj2k26")
+            .with_inner_size(size)
+            .with_min_inner_size(size);
+
+        #[cfg(target_arch = "wasm32")]
+        let attributes = {
+            use winit::platform::web::WindowAttributesExtWebSys;
+            attributes.with_append(true)
+        };
+
         let window = Arc::new(
             event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title("cj2k26")
-                        .with_inner_size(size)
-                        .with_min_inner_size(size),
-                )
+                .create_window(attributes)
                 .expect("failed to create window"),
         );
 
         let cx = GAME_W as i32 / 2;
         let cy = GAME_H as i32 / 2;
         let surface_texture = SurfaceTexture::new(size.width, size.height, window.clone());
-        let pixels = Pixels::new(GAME_W as u32, GAME_H as u32, surface_texture)
-            .expect("failed to create pixels");
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let pixels = Pixels::new(GAME_W as u32, GAME_H as u32, surface_texture)
+                .expect("failed to create pixels");
+            *self.pixels.borrow_mut() = Some(pixels);
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let slot = self.pixels.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let pixels = PixelsBuilder::new(GAME_W as u32, GAME_H as u32, surface_texture)
+                    .wgpu_backend(pixels::wgpu::Backends::GL)
+                    .build_async()
+                    .await
+                    .expect("failed to create pixels");
+                *slot.borrow_mut() = Some(pixels);
+            });
+        }
 
         screen.palette.set(ORANGE, 0xFF6633);
-        screen.sprites_mut().push(Sprite::new(
+        screen.palette.set(GRAY, 0x808080);
+
+        screen.sprites.push(Sprite::new(
             IVec2::new(cx, cy),
             16,
             16,
@@ -215,12 +157,39 @@ impl ApplicationHandler for Cj2k26 {
             IVec2::new(1, 1),
         ));
 
+        let mut tiles = vec![TRANSPARENT; 8 * 8];
+        tiles.resize(2 * 8 * 8, GRAY);
+        let tileset = Tileset::new(8, 8, tiles);
+
+        let cols = GAME_W as i32 / 8;
+        let rows = GAME_H as i32 / 8;
+        let mut cells = vec![0u16; (cols * rows) as usize];
+        for col in 0..cols {
+            cells[((rows - 2) * cols + col) as usize] = 1;
+            cells[((rows - 1) * cols + col) as usize] = 1;
+        }
+
+        let mut grid = Grid::new(IVec2::ZERO, cols, rows, 8, 8);
+        for (cell, &id) in cells.iter().enumerate() {
+            if id != 0 {
+                grid.set(cell as i32 % cols, cell as i32 / cols, true);
+            }
+        }
+        screen.grid = grid;
+
+        screen
+            .tilemaps
+            .push(Tilemap::new(IVec2::ZERO, cols, rows, cells, tileset));
+
         window.request_redraw();
         screen.window = Some(window.clone());
 
-        self.pixels = Some(pixels);
         self.screen = screen;
-        self.sfx = Some(Sfx::new());
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.sfx = Some(Sfx::new());
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -228,16 +197,16 @@ impl ApplicationHandler for Cj2k26 {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::Resized(size) => {
-                if let Some(pixels) = self.pixels.as_mut() {
+                if let Some(pixels) = self.pixels.borrow_mut().as_mut() {
                     let _ = pixels.resize_surface(size.width, size.height);
                 }
             }
 
             WindowEvent::RedrawRequested => {
                 self.update();
-                self.render();
+                self.draw();
 
-                if let Some(pixels) = self.pixels.as_mut() {
+                if let Some(pixels) = self.pixels.borrow_mut().as_mut() {
                     if let Err(err) = pixels.render() {
                         error!("render error: {err}");
                         return;
@@ -249,16 +218,44 @@ impl ApplicationHandler for Cj2k26 {
                 }
             }
 
+            WindowEvent::MouseInput { .. } | WindowEvent::KeyboardInput { .. } => {
+                if self.sfx.is_none() {
+                    self.sfx = Some(Sfx::new());
+                }
+            }
+
             _ => {}
         }
     }
 }
 
 fn main() {
-    env_logger::init();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        desktop_main()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_main()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn desktop_main() {
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut cj2k26 = Cj2k26::default();
 
     event_loop.run_app(&mut cj2k26).expect("failed to run app");
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_main() {
+    use winit::platform::web::EventLoopExtWebSys;
+
+    console_error_panic_hook::set_once();
+
+    let event_loop = EventLoop::new().expect("failed to create event loop");
+    event_loop.spawn_app(Cj2k26::default());
 }

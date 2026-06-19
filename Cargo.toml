@@ -14,6 +14,10 @@ resid-rs = { git = "https://github.com/asrael/resid-rs" }
 tinyaudio = "2.0"
 winit = "0.30"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+wasm-bindgen-futures = "0.4"
+
 [profile.dev]
 opt-level = 1
 panic = "abort"
