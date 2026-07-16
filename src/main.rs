@@ -9,10 +9,12 @@ use sfx::Sfx;
 use sprite::Sprite;
 
 use std::cell::RefCell;
+use std::fs;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use aseprite::{AsepriteFile, CelKind};
 use glam::IVec2;
 use log::error;
 use pixels::{Pixels, SurfaceTexture};
@@ -103,8 +105,8 @@ impl Cj2k26 {
         let frame = pixels.frame_mut();
         let player = &mut self.player;
 
-        for pxl in frame.chunks_exact_mut(4) {
-            pxl.copy_from_slice(&[0x1D, 0x20, 0x21, 0xFF]);
+        for pixel in frame.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[0x1D, 0x20, 0x21, 0xFF]);
         }
 
         player.sprite.draw(frame, &self.palette);
@@ -155,10 +157,26 @@ impl ApplicationHandler for Cj2k26 {
             });
         }
 
-        self.palette.set(ORANGE, 0xFF6633);
-        self.palette.set(GRAY, 0x808080);
+        let player_ase_buf =
+            fs::read("assets/player.aseprite").expect("failed to load player aseprite!");
+        let file = AsepriteFile::from_reader(&player_ase_buf[..])
+            .expect("failed to read player aseprite!");
+        let cel = file.cel(file.layer_ref(0).unwrap(), 0).unwrap();
+        let pixels = match &cel.kind {
+            CelKind::Compressed { pixels, .. } => Some(pixels),
+            CelKind::Raw { pixels, .. } => Some(pixels),
+
+            _ => None,
+        };
+
+        self.palette = Palette::from_ase(file.palette());
         self.player = Player {
-            sprite: Sprite::new(16, 16, IVec2::new(cx, cy), vec![ORANGE; 16 * 16]),
+            sprite: Sprite::new(
+                file.width() as i32,
+                file.height() as i32,
+                IVec2::new(cx, cy),
+                pixels.unwrap().data.clone(),
+            ),
             vel: IVec2::new(1, 1),
         };
         self.window = Some(window.clone());
