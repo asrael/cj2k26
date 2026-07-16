@@ -1,10 +1,12 @@
 mod color;
 mod gfx;
-mod grid;
-mod screen;
 mod sfx;
 mod sprite;
-mod tilemap;
+
+use color::Palette;
+use gfx::Drawable;
+use sfx::Sfx;
+use sprite::Sprite;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -17,72 +19,77 @@ use pixels::{Pixels, SurfaceTexture};
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 #[cfg(target_arch = "wasm32")]
 use pixels::PixelsBuilder;
 
-use gfx::Drawable;
-use grid::Grid;
-use screen::Screen;
-use sfx::Sfx;
-use sprite::Sprite;
-use tilemap::{Tilemap, Tileset};
-
-pub(crate) const GAME_W: usize = 240;
-pub(crate) const GAME_H: usize = 160;
-
 const MAX_FRAME: Duration = Duration::from_millis(100);
 const TICK: Duration = Duration::from_nanos(16_666_667);
-const TILE: i32 = 8;
 
 // palette colors by index
 const TRANSPARENT: u8 = 0;
 const ORANGE: u8 = 1;
 const GRAY: u8 = 2;
 
+const PLAYER_MOVES: [(Action, IVec2); 4] = [
+    (Action::Up, IVec2::new(0, -1)),
+    (Action::Down, IVec2::new(0, 1)),
+    (Action::Left, IVec2::new(-1, 0)),
+    (Action::Right, IVec2::new(1, 0)),
+];
+
+pub(crate) const GAME_W: u32 = 240;
+pub(crate) const GAME_H: u32 = 160;
+
 #[derive(Default)]
 struct Cj2k26 {
-    pixels: Rc<RefCell<Option<Pixels<'static>>>>,
-    screen: Screen,
-    sfx: Option<Sfx>,
-    last: Option<Instant>,
     accumulator: Duration,
+    input: u32,
+    last: Option<Instant>,
+    palette: Palette,
+    pixels: Rc<RefCell<Option<Pixels<'static>>>>,
+    player: Player,
+    sfx: Option<Sfx>,
+    window: Option<Arc<Window>>,
+}
+
+#[derive(Clone, Copy)]
+enum Action {
+    Up,
+    Down,
+    Left,
+    Right,
+    Fire,
+}
+
+#[derive(Default)]
+struct Player {
+    sprite: Sprite,
+    vel: IVec2,
 }
 
 impl Cj2k26 {
+    fn has_action(&self, action: Action) -> bool {
+        self.input & (1 << action as u32) != 0
+    }
+
     fn update(&mut self) {
-        for sprite in &mut self.screen.sprites {
-            let pos = sprite.pos;
-            let dim = sprite.dim;
-            let mut bounced = false;
+        let player_dir = PLAYER_MOVES
+            .iter()
+            .filter(|(a, _)| self.has_action(*a))
+            .fold(IVec2::ZERO, |acc, (_, v)| acc + *v);
 
-            let nx = pos.x + sprite.vel.x;
-            if nx < 0
-                || nx + dim.x > GAME_W as i32
-                || self.screen.grid.aabb(IVec2::new(nx, pos.y), dim)
-            {
-                sprite.vel.x = -sprite.vel.x;
-                bounced = true;
-            }
+        self.player.sprite.pos += player_dir * self.player.vel;
+        self.player.sprite.pos.x = self.player.sprite.pos.x.clamp(0, GAME_W as i32 - 16);
+        self.player.sprite.pos.y = self.player.sprite.pos.y.clamp(0, GAME_H as i32 - 16);
 
-            let ny = pos.y + sprite.vel.y;
-            if ny < 0
-                || ny + dim.y > GAME_H as i32
-                || self.screen.grid.aabb(IVec2::new(pos.x, ny), dim)
-            {
-                sprite.vel.y = -sprite.vel.y;
-                bounced = true;
-            }
-
-            sprite.pos += sprite.vel;
-
-            if bounced {
-                if let Some(sfx) = &self.sfx {
-                    sfx.bounce();
-                }
+        if self.has_action(Action::Fire) {
+            if let Some(sfx) = &self.sfx {
+                sfx.shoot();
             }
         }
     }
@@ -94,25 +101,19 @@ impl Cj2k26 {
         };
 
         let frame = pixels.frame_mut();
+        let player = &mut self.player;
 
         for pxl in frame.chunks_exact_mut(4) {
-            pxl.copy_from_slice(&[0, 0, 0, 0xFF]);
+            pxl.copy_from_slice(&[0x1D, 0x20, 0x21, 0xFF]);
         }
 
-        for tilemap in &self.screen.tilemaps {
-            tilemap.draw(frame, &self.screen.palette);
-        }
-
-        for sprite in &self.screen.sprites {
-            sprite.draw(frame, &self.screen.palette);
-        }
+        player.sprite.draw(frame, &self.palette);
     }
 }
 
 impl ApplicationHandler for Cj2k26 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let mut screen = Screen::new();
-        let size = LogicalSize::new(1280, 720);
+        let size = LogicalSize::new(GAME_W * 5, GAME_H * 5);
         let attributes = Window::default_attributes()
             .with_title("cj2k26")
             .with_inner_size(size)
@@ -154,45 +155,16 @@ impl ApplicationHandler for Cj2k26 {
             });
         }
 
-        screen.palette.set(ORANGE, 0xFF6633);
-        screen.palette.set(GRAY, 0x808080);
-
-        screen.sprites.push(Sprite::new(
-            IVec2::new(cx, cy),
-            16,
-            16,
-            vec![ORANGE; 16 * 16],
-            IVec2::new(1, 1),
-        ));
-
-        let mut tiles = vec![TRANSPARENT; (TILE * TILE) as usize];
-        tiles.resize((2 * TILE * TILE) as usize, GRAY);
-
-        let cols = GAME_W as i32 / TILE;
-        let rows = GAME_H as i32 / TILE;
-        let mut cells = vec![0u16; (cols * rows) as usize];
-        let mut grid = Grid::new(IVec2::ZERO, cols, rows, TILE, TILE);
-        for col in 0..cols {
-            for row in [rows - 2, rows - 1] {
-                cells[(row * cols + col) as usize] = 1;
-                grid.set(col, row, true);
-            }
-        }
-        screen.grid = grid;
-
-        screen.tilemaps.push(Tilemap::new(
-            IVec2::ZERO,
-            cols,
-            rows,
-            cells,
-            Tileset::new(TILE, TILE, tiles),
-        ));
+        self.palette.set(ORANGE, 0xFF6633);
+        self.palette.set(GRAY, 0x808080);
+        self.player = Player {
+            sprite: Sprite::new(16, 16, IVec2::new(cx, cy), vec![ORANGE; 16 * 16]),
+            vel: IVec2::new(1, 1),
+        };
+        self.window = Some(window.clone());
+        self.sfx = Some(Sfx::new());
 
         window.request_redraw();
-        screen.window = Some(window.clone());
-
-        self.screen = screen;
-        self.sfx = Some(Sfx::new());
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -228,8 +200,27 @@ impl ApplicationHandler for Cj2k26 {
                     }
                 }
 
-                if let Some(window) = self.screen.window.as_ref() {
+                if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
+                }
+            }
+
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(action) = bind(code) {
+                    let bit = 1 << action as u32;
+
+                    match state {
+                        ElementState::Pressed => self.input |= bit,
+                        ElementState::Released => self.input &= !bit,
+                    }
                 }
             }
 
@@ -241,6 +232,18 @@ impl ApplicationHandler for Cj2k26 {
 
             _ => {}
         }
+    }
+}
+
+fn bind(code: KeyCode) -> Option<Action> {
+    match code {
+        KeyCode::KeyW | KeyCode::ArrowUp => Some(Action::Up),
+        KeyCode::KeyS | KeyCode::ArrowDown => Some(Action::Down),
+        KeyCode::KeyA | KeyCode::ArrowLeft => Some(Action::Left),
+        KeyCode::KeyD | KeyCode::ArrowRight => Some(Action::Right),
+        KeyCode::Space => Some(Action::Fire),
+
+        _ => None,
     }
 }
 
