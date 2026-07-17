@@ -30,11 +30,15 @@ impl Sfx {
         }
     }
 
-    fn trigger(sid: &mut Sid, hz: f32) {
+    fn set_freq(sid: &mut Sid, hz: f32) {
         let freq = (hz * 16_777_216.0 / PAL_CLOCK as f32) as u16;
 
         sid.write(0x00, freq as u8);
         sid.write(0x01, (freq >> 8) as u8);
+    }
+
+    fn trigger(sid: &mut Sid, hz: f32) {
+        Self::set_freq(sid, hz);
         sid.write(0x04, 0x20);
         sid.write(0x04, 0x21);
     }
@@ -56,8 +60,10 @@ impl Sfx {
 
         sid.set_sampling_parameters(SamplingMethod::ResampleFast, PAL_CLOCK, sample_rate);
         sid.write(0x18, 0x0F);
-        sid.write(0x05, 0x08);
+        sid.write(0x05, 0x06);
         sid.write(0x06, 0x00);
+
+        let mut sweep_hz: f32 = 0.0;
 
         let stream = device
             .build_output_stream(
@@ -65,7 +71,10 @@ impl Sfx {
                 move |data: &mut [f32], _: &OutputCallbackInfo| {
                     while let Ok(sound) = rx.try_recv() {
                         match sound {
-                            Sound::Shoot => Self::trigger(&mut sid, 220.0),
+                            Sound::Shoot => {
+                                sweep_hz = 1760.0;
+                                Self::trigger(&mut sid, sweep_hz);
+                            }
                         }
                     }
 
@@ -74,7 +83,21 @@ impl Sfx {
                         scratch.resize(frames, 0);
                     }
                     let out = &mut scratch[..frames];
-                    Self::fill(&mut sid, out, sample_rate);
+
+                    for block in out.chunks_mut(64) {
+                        if sweep_hz > 0.0 {
+                            sweep_hz *= 0.975;
+
+                            if sweep_hz < 220.0 {
+                                sweep_hz = 0.0;
+                                sid.write(0x04, 0x20);
+                            } else {
+                                Self::set_freq(&mut sid, sweep_hz);
+                            }
+                        }
+
+                        Self::fill(&mut sid, block, sample_rate);
+                    }
 
                     for (frame, &s) in data.chunks_mut(channels).zip(out.iter()) {
                         frame.fill(s as f32 / 32768.0);

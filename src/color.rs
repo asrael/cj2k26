@@ -1,5 +1,41 @@
 pub type Color = u32;
 
+#[allow(dead_code)]
+pub mod db32 {
+    pub const BLACK: u8 = 0;
+    pub const DARK_PURPLE: u8 = 1;
+    pub const MAROON: u8 = 2;
+    pub const DARK_BROWN: u8 = 3;
+    pub const BROWN: u8 = 4;
+    pub const ORANGE: u8 = 5;
+    pub const TAN: u8 = 6;
+    pub const PEACH: u8 = 7;
+    pub const YELLOW: u8 = 8;
+    pub const LIME: u8 = 9;
+    pub const GREEN: u8 = 10;
+    pub const SEA_GREEN: u8 = 11;
+    pub const DARK_GREEN: u8 = 12;
+    pub const OLIVE: u8 = 13;
+    pub const CHARCOAL: u8 = 14;
+    pub const NAVY: u8 = 15;
+    pub const STEEL_BLUE: u8 = 16;
+    pub const INDIGO: u8 = 17;
+    pub const BLUE: u8 = 18;
+    pub const CYAN: u8 = 19;
+    pub const PALE_BLUE: u8 = 20;
+    pub const WHITE: u8 = 21;
+    pub const GRAY: u8 = 22;
+    pub const STONE: u8 = 23;
+    pub const DIM_GRAY: u8 = 24;
+    pub const SLATE: u8 = 25;
+    pub const PURPLE: u8 = 26;
+    pub const RED: u8 = 27;
+    pub const SALMON: u8 = 28;
+    pub const PINK: u8 = 29;
+    pub const MOSS: u8 = 30;
+    pub const KHAKI: u8 = 31;
+}
+
 const fn to_rgb(c: Color) -> [u8; 3] {
     [(c >> 16) as u8, (c >> 8) as u8, c as u8]
 }

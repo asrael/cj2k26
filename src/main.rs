@@ -1,21 +1,31 @@
+mod bullet;
 mod color;
+mod enemy;
 mod gfx;
+mod player;
+mod rng;
 mod sfx;
 mod sprite;
+mod starfield;
 
+use bullet::Bullet;
 use color::Palette;
-use gfx::Drawable;
+use color::db32::BLACK;
+use enemy::Enemy;
+use player::Player;
+use rng::Rng;
 use sfx::Sfx;
-use sprite::Sprite;
+use starfield::Starfield;
 
 use std::cell::RefCell;
+use std::f32::consts::TAU;
 use std::fs;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aseprite::{AsepriteFile, CelKind};
-use glam::IVec2;
+use aseprite::AsepriteFile;
+use glam::{IVec2, Vec2};
 use log::error;
 use pixels::{Pixels, SurfaceTexture};
 use web_time::Instant;
@@ -32,11 +42,6 @@ use pixels::PixelsBuilder;
 const MAX_FRAME: Duration = Duration::from_millis(100);
 const TICK: Duration = Duration::from_nanos(16_666_667);
 
-// palette colors by index
-const TRANSPARENT: u8 = 0;
-const ORANGE: u8 = 1;
-const GRAY: u8 = 2;
-
 const PLAYER_MOVES: [(Action, IVec2); 4] = [
     (Action::Up, IVec2::new(0, -1)),
     (Action::Down, IVec2::new(0, 1)),
@@ -50,12 +55,19 @@ pub(crate) const GAME_H: u32 = 160;
 #[derive(Default)]
 struct Cj2k26 {
     accumulator: Duration,
+    dive_timer: u32,
+    enemies: Vec<Enemy>,
+    enemy_bullets: Vec<Bullet>,
+    enemy_sway: f32,
     input: u32,
     last: Option<Instant>,
     palette: Palette,
     pixels: Rc<RefCell<Option<Pixels<'static>>>>,
     player: Player,
+    player_bullets: Vec<Bullet>,
+    rng: Rng,
     sfx: Option<Sfx>,
+    starfield: Starfield,
     window: Option<Arc<Window>>,
 }
 
@@ -68,54 +80,87 @@ enum Action {
     Fire,
 }
 
-#[derive(Default)]
-struct Player {
-    sprite: Sprite,
-    vel: IVec2,
-}
-
 impl Cj2k26 {
     fn has_action(&self, action: Action) -> bool {
         self.input & (1 << action as u32) != 0
     }
 
     fn update(&mut self) {
+        self.starfield.update();
+
         let player_dir = PLAYER_MOVES
             .iter()
             .filter(|(a, _)| self.has_action(*a))
             .fold(IVec2::ZERO, |acc, (_, v)| acc + *v);
 
-        self.player.sprite.pos += player_dir * self.player.vel;
-        self.player.sprite.pos.x = self.player.sprite.pos.x.clamp(0, GAME_W as i32 - 16);
-        self.player.sprite.pos.y = self.player.sprite.pos.y.clamp(0, GAME_H as i32 - 16);
+        self.player.update(player_dir);
 
-        if self.has_action(Action::Fire) {
-            if let Some(sfx) = &self.sfx {
-                sfx.shoot();
+        self.dive_timer += 1;
+        if self.dive_timer >= 180 && !self.enemies.is_empty() {
+            self.dive_timer = 0;
+
+            let i = self.rng.range(self.enemies.len() as u32) as usize;
+            let player_x = self.player.pos().x;
+            self.enemies[i].start_dive(player_x, &mut self.rng);
+        }
+
+        self.enemy_sway += 1.0 / 60.0;
+        let sway = 12.0 * (self.enemy_sway * TAU / 3.0).sin();
+        for enemy in &mut self.enemies {
+            if let Some(muzzle_pos) = enemy.update(sway) {
+                self.enemy_bullets
+                    .push(Bullet::aimed(muzzle_pos, self.player.pos()));
             }
         }
+
+        if self.has_action(Action::Fire) {
+            if let Some(muzzle_pos) = self.player.try_fire() {
+                if let Some(sfx) = &self.sfx {
+                    sfx.shoot();
+                }
+
+                self.player_bullets.push(Bullet::fired(muzzle_pos));
+            }
+        }
+
+        for bullet in self
+            .player_bullets
+            .iter_mut()
+            .chain(&mut self.enemy_bullets)
+        {
+            bullet.update();
+        }
+
+        self.player_bullets.retain(|b| !b.offscreen());
+        self.enemy_bullets.retain(|b| !b.offscreen());
     }
 
-    fn draw(&mut self) {
+    fn draw(&mut self, a: f32) {
         let mut pixels = self.pixels.borrow_mut();
         let Some(pixels) = pixels.as_mut() else {
             return;
         };
 
         let frame = pixels.frame_mut();
-        let player = &mut self.player;
 
-        for pixel in frame.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[0x1D, 0x20, 0x21, 0xFF]);
+        gfx::clear(frame, self.palette.rgb(BLACK));
+
+        self.starfield.draw(frame, &self.palette, a);
+        self.player.draw(frame, &self.palette, a);
+
+        for enemy in &self.enemies {
+            enemy.draw(frame, &self.palette, a);
         }
 
-        player.sprite.draw(frame, &self.palette);
+        for bullet in self.player_bullets.iter().chain(&self.enemy_bullets) {
+            bullet.draw(frame, &self.palette, a);
+        }
     }
 }
 
 impl ApplicationHandler for Cj2k26 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let size = LogicalSize::new(GAME_W * 5, GAME_H * 5);
+        let size = LogicalSize::new(GAME_W * 4, GAME_H * 4);
         let attributes = Window::default_attributes()
             .with_title("cj2k26")
             .with_inner_size(size)
@@ -133,8 +178,6 @@ impl ApplicationHandler for Cj2k26 {
                 .expect("failed to create window"),
         );
 
-        let cx = GAME_W as i32 / 2;
-        let cy = GAME_H as i32 / 2;
         let surface_texture = SurfaceTexture::new(size.width, size.height, window.clone());
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -157,30 +200,22 @@ impl ApplicationHandler for Cj2k26 {
             });
         }
 
-        let player_ase_buf =
-            fs::read("assets/player.aseprite").expect("failed to load player aseprite!");
-        let file = AsepriteFile::from_reader(&player_ase_buf[..])
-            .expect("failed to read player aseprite!");
-        let cel = file.cel(file.layer_ref(0).unwrap(), 0).unwrap();
-        let pixels = match &cel.kind {
-            CelKind::Compressed { pixels, .. } => Some(pixels),
-            CelKind::Raw { pixels, .. } => Some(pixels),
+        let rng = Rng::default();
+        let sprites_buf =
+            fs::read("assets/sprites.aseprite").expect("failed to load player aseprite!");
+        let sprites =
+            AsepriteFile::from_reader(&sprites_buf[..]).expect("failed to read player aseprite!");
 
-            _ => None,
-        };
+        self.enemies = (0..8)
+            .map(|i| Enemy::new(&sprites, "enemy0", Vec2::new(24.0 + i as f32 * 24.0, 24.0)))
+            .collect();
 
-        self.palette = Palette::from_ase(file.palette());
-        self.player = Player {
-            sprite: Sprite::new(
-                file.width() as i32,
-                file.height() as i32,
-                IVec2::new(cx, cy),
-                pixels.unwrap().data.clone(),
-            ),
-            vel: IVec2::new(1, 1),
-        };
-        self.window = Some(window.clone());
+        self.palette = Palette::from_ase(sprites.palette());
+        self.player = Player::new(&sprites, 2.0);
+        self.rng = rng;
         self.sfx = Some(Sfx::new());
+        self.starfield = Starfield::new(60, &mut self.rng);
+        self.window = Some(window.clone());
 
         window.request_redraw();
     }
@@ -209,7 +244,8 @@ impl ApplicationHandler for Cj2k26 {
                     self.accumulator -= TICK;
                 }
 
-                self.draw();
+                let alpha = self.accumulator.as_secs_f32() / TICK.as_secs_f32();
+                self.draw(alpha);
 
                 if let Some(pixels) = self.pixels.borrow_mut().as_mut() {
                     if let Err(err) = pixels.render() {
@@ -232,7 +268,7 @@ impl ApplicationHandler for Cj2k26 {
                     },
                 ..
             } => {
-                if let Some(action) = bind(code) {
+                if let Some(action) = bind_key(code) {
                     let bit = 1 << action as u32;
 
                     match state {
@@ -253,7 +289,7 @@ impl ApplicationHandler for Cj2k26 {
     }
 }
 
-fn bind(code: KeyCode) -> Option<Action> {
+fn bind_key(code: KeyCode) -> Option<Action> {
     match code {
         KeyCode::KeyW | KeyCode::ArrowUp => Some(Action::Up),
         KeyCode::KeyS | KeyCode::ArrowDown => Some(Action::Down),
