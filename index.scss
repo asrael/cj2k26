@@ -1,0 +1,18 @@
+html,
+body {
+    margin: 0;
+    overflow: hidden;
+    background: #000;
+}
+
+canvas {
+    display: block;
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    width: 240px !important;
+    height: 160px !important;
+    image-rendering: pixelated;
+    transform-origin: center;
+    outline: none;
+}

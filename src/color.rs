@@ -30,14 +30,10 @@ pub mod db32 {
     pub const SLATE: u8 = 25;
     pub const PURPLE: u8 = 26;
     pub const RED: u8 = 27;
-    pub const SALMON: u8 = 28;
+    pub const LIGHT_RED: u8 = 28;
     pub const PINK: u8 = 29;
     pub const MOSS: u8 = 30;
     pub const KHAKI: u8 = 31;
-}
-
-const fn to_rgb(c: Color) -> [u8; 3] {
-    [(c >> 16) as u8, (c >> 8) as u8, c as u8]
 }
 
 const fn from_rgb(r: u8, g: u8, b: u8) -> Color {
@@ -49,33 +45,13 @@ pub struct Palette([Color; 256]);
 
 impl Default for Palette {
     fn default() -> Self {
-        Self::new()
+        Self([0; 256])
     }
 }
 
 impl Palette {
-    pub const fn new() -> Self {
-        Self([0; 256])
-    }
-
     pub fn at(&self, index: u8) -> Color {
         self.0[index as usize]
-    }
-
-    pub fn cycle(&self, base: u8, offset: u8) -> Color {
-        self.0[base.wrapping_add(offset) as usize]
-    }
-
-    pub fn index_of(&self, color: Color) -> Option<u8> {
-        self.0.iter().position(|&c| c == color).map(|i| i as u8)
-    }
-
-    pub fn set(&mut self, index: u8, color: Color) {
-        self.0[index as usize] = color;
-    }
-
-    pub fn rgb(&self, index: u8) -> [u8; 3] {
-        to_rgb(self.0[index as usize])
     }
 
     pub fn from_ase(src: &[aseprite::Color]) -> Self {

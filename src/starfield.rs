@@ -1,9 +1,9 @@
 use crate::color::Palette;
-use crate::color::db32::{BLUE, CYAN, GRAY, LIME, PALE_BLUE, SALMON, WHITE, YELLOW};
+use crate::color::db32::{BLUE, CYAN, GRAY, LIGHT_RED, LIME, PALE_BLUE, WHITE, YELLOW};
 use crate::rng::Rng;
 use crate::{GAME_H, GAME_W};
 
-const STAR_COLORS: [u8; 8] = [WHITE, GRAY, PALE_BLUE, CYAN, BLUE, YELLOW, SALMON, LIME];
+const STAR_COLORS: [u8; 8] = [WHITE, GRAY, PALE_BLUE, CYAN, BLUE, YELLOW, LIGHT_RED, LIME];
 
 struct Star {
     color: u8,
@@ -15,7 +15,6 @@ struct Star {
 #[derive(Default)]
 pub struct Starfield {
     stars: Vec<Star>,
-    tick: u32,
 }
 
 impl Starfield {
@@ -37,12 +36,10 @@ impl Starfield {
             })
             .collect();
 
-        Self { stars, tick: 0 }
+        Self { stars }
     }
 
     pub fn update(&mut self) {
-        self.tick += 1;
-
         for star in &mut self.stars {
             star.y += star.speed;
             if star.y >= GAME_H as f32 {
@@ -51,15 +48,12 @@ impl Starfield {
         }
     }
 
-    pub fn draw(&self, frame: &mut [u8], palette: &Palette, a: f32) {
+    pub fn draw(&self, frame: &mut [u32], palette: &Palette, a: f32) {
         for star in &self.stars {
-            let mut y = star.y - star.speed * (1.0 - a);
-            if y < 0.0 {
-                y += GAME_H as f32;
-            }
+            let y = star.y - star.speed * (1.0 - a);
+            let y = (y as i32).rem_euclid(GAME_H as i32);
 
-            let idx = (y as i32 * GAME_W as i32 + star.x) as usize * 4;
-            frame[idx..idx + 3].copy_from_slice(&palette.rgb(star.color));
+            frame[(y * GAME_W as i32 + star.x) as usize] = palette.at(star.color);
         }
     }
 }

@@ -1,9 +1,60 @@
 use crate::color::Palette;
 use crate::{GAME_H, GAME_W};
 
+use embedded_graphics::Drawable;
+use embedded_graphics::Pixel;
+use embedded_graphics::draw_target::DrawTarget;
+use embedded_graphics::geometry::{OriginDimensions, Point, Size};
+use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
+use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
+use embedded_graphics::text::{Baseline, Text};
 use glam::{IVec2, Vec2};
 
-pub fn blit(frame: &mut [u8], palette: &Palette, pixels: &[u8], origin: IVec2, width: i32) {
+pub struct Frame<'a>(pub &'a mut [u32]);
+
+impl OriginDimensions for Frame<'_> {
+    fn size(&self) -> Size {
+        Size::new(GAME_W, GAME_H)
+    }
+}
+
+impl DrawTarget for Frame<'_> {
+    type Color = Rgb888;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Rgb888>>,
+    {
+        for Pixel(p, color) in pixels {
+            if p.x < 0 || p.x >= GAME_W as i32 || p.y < 0 || p.y >= GAME_H as i32 {
+                continue;
+            }
+
+            self.0[(p.y * GAME_W as i32 + p.x) as usize] =
+                (color.r() as u32) << 16 | (color.g() as u32) << 8 | color.b() as u32;
+        }
+
+        Ok(())
+    }
+}
+
+pub fn draw_text(frame: &mut [u32], font: &MonoFont, text: &str, pos: IVec2, color: u32) {
+    let color = Rgb888::new((color >> 16) as u8, (color >> 8) as u8, color as u8);
+    let style = MonoTextStyle::new(font, color);
+
+    let _ = Text::with_baseline(text, Point::new(pos.x, pos.y), style, Baseline::Top)
+        .draw(&mut Frame(frame));
+}
+
+pub fn blit(
+    frame: &mut [u32],
+    palette: &Palette,
+    pixels: &[u8],
+    origin: IVec2,
+    width: i32,
+    tint: u8,
+) {
     for (i, &px) in pixels.iter().enumerate() {
         if px == 0 {
             continue;
@@ -15,18 +66,19 @@ pub fn blit(frame: &mut [u8], palette: &Palette, pixels: &[u8], origin: IVec2, w
             continue;
         }
 
-        let idx = (sy * GAME_W as i32 + sx) as usize * 4;
-        frame[idx..idx + 3].copy_from_slice(&palette.rgb(px));
+        let px = if tint != 0 { tint } else { px };
+        frame[(sy * GAME_W as i32 + sx) as usize] = palette.at(px);
     }
 }
 
 pub fn blit_rotated(
-    frame: &mut [u8],
+    frame: &mut [u32],
     palette: &Palette,
     pixels: &[u8],
     center: Vec2,
     width: i32,
     angle: f32,
+    tint: u8,
 ) {
     let height = pixels.len() as i32 / width;
     let half = Vec2::new(width as f32, height as f32) / 2.0;
@@ -54,15 +106,8 @@ pub fn blit_rotated(
                 continue;
             }
 
-            let idx = (fy * GAME_W as i32 + fx) as usize * 4;
-            frame[idx..idx + 3].copy_from_slice(&palette.rgb(px));
+            let px = if tint != 0 { tint } else { px };
+            frame[(fy * GAME_W as i32 + fx) as usize] = palette.at(px);
         }
-    }
-}
-
-pub fn clear(frame: &mut [u8], rgb: [u8; 3]) {
-    for pixel in frame.chunks_exact_mut(4) {
-        pixel[..3].copy_from_slice(&rgb);
-        pixel[3] = 0xFF;
     }
 }

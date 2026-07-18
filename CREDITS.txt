@@ -1,0 +1,8 @@
+cj2k26 by asrael https://github.com/asrael/cj2k26
+
+Thanks to the below third-parties!
+
+* DB32 color palette by DawnBringer (Richard Fhager) *
+* SID audio emulation by resid-rs (GPL license applies to the binary) *
+* Built with Rust, winit, softbuffer, cpal, glam, aseprite-io, embedded-graphics and Trunk
+
