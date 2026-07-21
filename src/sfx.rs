@@ -4,6 +4,12 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{OutputCallbackInfo, Stream};
 use resid::{ChipModel, PAL_CLOCK, SamplingMethod, Sid};
 
+const GATE: u8 = 0x01;
+const TRIANGLE: u8 = 0x10;
+const SAWTOOTH: u8 = 0x20;
+const PULSE: u8 = 0x40;
+const NOISE: u8 = 0x80;
+
 enum Sound {
     EnemyShoot,
     Explosion,
@@ -19,36 +25,6 @@ pub struct Sfx {
 }
 
 impl Sfx {
-    fn fill(sid: &mut Sid, out: &mut [i16], sample_rate: u32) {
-        let budget = PAL_CLOCK / sample_rate + 1;
-        let mut i = 0;
-
-        while i < out.len() {
-            let target = (out.len() - i) as u32;
-            let (n, _) = sid.sample(target * budget, &mut out[i..], 1);
-
-            if n == 0 {
-                break;
-            }
-
-            i += n;
-        }
-    }
-
-    fn set_freq(sid: &mut Sid, voice: u8, hz: f32) {
-        let base = voice * 7;
-        let freq = (hz * 16_777_216.0 / PAL_CLOCK as f32) as u16;
-
-        sid.write(base, freq as u8);
-        sid.write(base + 1, (freq >> 8) as u8);
-    }
-
-    fn trigger(sid: &mut Sid, hz: f32) {
-        Self::set_freq(sid, 0, hz);
-        sid.write(0x04, 0x20);
-        sid.write(0x04, 0x21);
-    }
-
     pub fn new() -> Self {
         let device = cpal::default_host()
             .default_output_device()
@@ -65,22 +41,19 @@ impl Sfx {
         let (tx, rx) = channel::<Sound>();
 
         sid.set_sampling_parameters(SamplingMethod::ResampleFast, PAL_CLOCK, sample_rate);
-        sid.write(0x18, 0x0F);
-        sid.write(0x05, 0x06);
-        sid.write(0x06, 0x00);
-        sid.write(0x0C, 0x06);
-        sid.write(0x0D, 0x00);
-        sid.write(0x13, 0x08);
-        sid.write(0x14, 0xA9);
+        Self::set_volume(&mut sid, 0x0F);
+        Self::set_envelope(&mut sid, 0, 0x06, 0x00);
+        Self::set_envelope(&mut sid, 1, 0x06, 0x00);
+        Self::set_envelope(&mut sid, 2, 0x08, 0xA9);
 
-        let mut sweep_hz: f32 = 0.0;
-        let mut zap_hz: f32 = 0.0;
-        let mut boom_hz: f32 = 0.0;
-        let mut coin_t: u32 = 0;
-        let mut tink_t: u32 = 0;
-        let mut lose_t: u32 = 0;
+        let mut enemy_shoot_hz: f32 = 0.0;
+        let mut explosion_hz: f32 = 0.0;
+        let mut hit_t: u32 = 0;
         let mut lose_hz: f32 = 0.0;
+        let mut lose_t: u32 = 0;
         let mut lose_wob: f32 = 0.0;
+        let mut shoot_hz: f32 = 0.0;
+        let mut win_t: u32 = 0;
 
         let stream = device
             .build_output_stream(
@@ -89,64 +62,54 @@ impl Sfx {
                     while let Ok(sound) = rx.try_recv() {
                         match sound {
                             Sound::EnemyShoot => {
-                                zap_hz = 520.0;
-                                Self::set_freq(&mut sid, 1, zap_hz);
-                                sid.write(0x0B, 0x10);
-                                sid.write(0x0B, 0x11);
+                                enemy_shoot_hz = 520.0;
+                                Self::set_freq(&mut sid, 1, enemy_shoot_hz);
+                                Self::gate_on(&mut sid, 1, TRIANGLE);
                             }
 
                             Sound::Explosion => {
-                                tink_t = 0;
-                                sid.write(0x13, 0x08);
-                                sid.write(0x14, 0xA9);
+                                hit_t = 0;
+                                Self::set_envelope(&mut sid, 2, 0x08, 0xA9);
 
-                                boom_hz = 2500.0;
-                                Self::set_freq(&mut sid, 2, boom_hz);
-                                sid.write(0x12, 0x80);
-                                sid.write(0x12, 0x81);
+                                explosion_hz = 2500.0;
+                                Self::set_freq(&mut sid, 2, explosion_hz);
+                                Self::gate_on(&mut sid, 2, NOISE);
                             }
 
                             Sound::Hit => {
-                                sid.write(0x13, 0x05);
-                                sid.write(0x14, 0x00);
+                                Self::set_envelope(&mut sid, 2, 0x05, 0x00);
 
-                                tink_t = 45;
+                                hit_t = 45;
                                 Self::set_freq(&mut sid, 2, 2500.0);
-                                sid.write(0x12, 0x80);
-                                sid.write(0x12, 0x81);
+                                Self::gate_on(&mut sid, 2, NOISE);
                             }
 
                             Sound::Lose => {
-                                zap_hz = 0.0;
-                                sid.write(0x0C, 0x00);
-                                sid.write(0x0D, 0xC6);
-                                sid.write(0x09, 0x00);
-                                sid.write(0x0A, 0x08);
+                                enemy_shoot_hz = 0.0;
+                                Self::set_envelope(&mut sid, 1, 0x00, 0xC6);
+                                Self::set_pulse_width(&mut sid, 1, 0x0800);
 
                                 lose_hz = 392.0;
-                                lose_wob = 0.0;
                                 lose_t = 300;
+                                lose_wob = 0.0;
                                 Self::set_freq(&mut sid, 1, lose_hz);
-                                sid.write(0x0B, 0x40);
-                                sid.write(0x0B, 0x41);
+                                Self::gate_on(&mut sid, 1, PULSE);
                             }
 
                             Sound::Shoot => {
-                                sweep_hz = 1760.0;
-                                Self::trigger(&mut sid, sweep_hz);
+                                shoot_hz = 1760.0;
+                                Self::set_freq(&mut sid, 0, shoot_hz);
+                                Self::gate_on(&mut sid, 0, SAWTOOTH);
                             }
 
                             Sound::Win => {
-                                sweep_hz = 0.0;
-                                sid.write(0x05, 0x00);
-                                sid.write(0x06, 0xA9);
-                                sid.write(0x02, 0x00);
-                                sid.write(0x03, 0x08);
+                                shoot_hz = 0.0;
+                                Self::set_envelope(&mut sid, 0, 0x00, 0xA9);
+                                Self::set_pulse_width(&mut sid, 0, 0x0800);
 
-                                coin_t = 300;
+                                win_t = 300;
                                 Self::set_freq(&mut sid, 0, 987.77);
-                                sid.write(0x04, 0x40);
-                                sid.write(0x04, 0x41);
+                                Self::gate_on(&mut sid, 0, PULSE);
                             }
                         }
                     }
@@ -158,47 +121,28 @@ impl Sfx {
                     let out = &mut scratch[..frames];
 
                     for block in out.chunks_mut(64) {
-                        if sweep_hz > 0.0 {
-                            sweep_hz *= 0.975;
+                        Self::sweep(&mut sid, &mut shoot_hz, 0.975, 220.0, 0, SAWTOOTH);
+                        Self::sweep(&mut sid, &mut enemy_shoot_hz, 0.97, 200.0, 1, TRIANGLE);
+                        Self::sweep(&mut sid, &mut explosion_hz, 0.985, 150.0, 2, NOISE);
 
-                            if sweep_hz < 220.0 {
-                                sweep_hz = 0.0;
-                                sid.write(0x04, 0x20);
-                            } else {
-                                Self::set_freq(&mut sid, 0, sweep_hz);
+                        if hit_t > 0 {
+                            hit_t -= 1;
+                            if hit_t == 0 {
+                                Self::gate_off(&mut sid, 2, NOISE);
                             }
                         }
 
-                        if zap_hz > 0.0 {
-                            zap_hz *= 0.97;
+                        if win_t > 0 {
+                            win_t -= 1;
 
-                            if zap_hz < 200.0 {
-                                zap_hz = 0.0;
-                                sid.write(0x0B, 0x10);
-                            } else {
-                                Self::set_freq(&mut sid, 1, zap_hz);
-                            }
-                        }
-
-                        if tink_t > 0 {
-                            tink_t -= 1;
-                            if tink_t == 0 {
-                                sid.write(0x12, 0x80);
-                            }
-                        }
-
-                        if coin_t > 0 {
-                            coin_t -= 1;
-
-                            if coin_t == 245 || coin_t == 190 {
-                                let hz = if coin_t == 245 { 1318.5 } else { 1661.2 };
+                            if win_t == 245 || win_t == 190 {
+                                let hz = if win_t == 245 { 1318.5 } else { 1661.2 };
                                 Self::set_freq(&mut sid, 0, hz);
-                                sid.write(0x04, 0x40);
-                                sid.write(0x04, 0x41);
+                                Self::gate_on(&mut sid, 0, PULSE);
                             }
 
-                            if coin_t == 0 {
-                                sid.write(0x04, 0x40);
+                            if win_t == 0 {
+                                Self::gate_off(&mut sid, 0, PULSE);
                             }
                         }
 
@@ -211,18 +155,7 @@ impl Sfx {
                             Self::set_freq(&mut sid, 1, hz);
 
                             if lose_t == 0 {
-                                sid.write(0x0B, 0x40);
-                            }
-                        }
-
-                        if boom_hz > 0.0 {
-                            boom_hz *= 0.985;
-
-                            if boom_hz < 150.0 {
-                                boom_hz = 0.0;
-                                sid.write(0x12, 0x80);
-                            } else {
-                                Self::set_freq(&mut sid, 2, boom_hz);
+                                Self::gate_off(&mut sid, 1, PULSE);
                             }
                         }
 
@@ -263,11 +196,75 @@ impl Sfx {
         let _ = self.tx.send(Sound::Lose);
     }
 
+    pub fn shoot(&self) {
+        let _ = self.tx.send(Sound::Shoot);
+    }
+
     pub fn win(&self) {
         let _ = self.tx.send(Sound::Win);
     }
 
-    pub fn shoot(&self) {
-        let _ = self.tx.send(Sound::Shoot);
+    fn fill(sid: &mut Sid, out: &mut [i16], sample_rate: u32) {
+        let budget = PAL_CLOCK / sample_rate + 1;
+        let mut i = 0;
+
+        while i < out.len() {
+            let target = (out.len() - i) as u32;
+            let (n, _) = sid.sample(target * budget, &mut out[i..], 1);
+
+            if n == 0 {
+                break;
+            }
+
+            i += n;
+        }
+    }
+
+    fn gate_off(sid: &mut Sid, voice: u8, wave: u8) {
+        sid.write(voice * 7 + 4, wave);
+    }
+
+    fn gate_on(sid: &mut Sid, voice: u8, wave: u8) {
+        sid.write(voice * 7 + 4, wave);
+        sid.write(voice * 7 + 4, wave | GATE);
+    }
+
+    fn set_envelope(sid: &mut Sid, voice: u8, attack_decay: u8, sustain_release: u8) {
+        let base = voice * 7;
+
+        sid.write(base + 5, attack_decay);
+        sid.write(base + 6, sustain_release);
+    }
+
+    fn set_freq(sid: &mut Sid, voice: u8, hz: f32) {
+        let base = voice * 7;
+        let freq = (hz * 16_777_216.0 / PAL_CLOCK as f32) as u16;
+
+        sid.write(base, freq as u8);
+        sid.write(base + 1, (freq >> 8) as u8);
+    }
+
+    fn set_pulse_width(sid: &mut Sid, voice: u8, width: u16) {
+        let base = voice * 7;
+
+        sid.write(base + 2, width as u8);
+        sid.write(base + 3, (width >> 8) as u8);
+    }
+
+    fn set_volume(sid: &mut Sid, volume: u8) {
+        sid.write(0x18, volume);
+    }
+
+    fn sweep(sid: &mut Sid, hz: &mut f32, rate: f32, floor: f32, voice: u8, wave: u8) {
+        if *hz > 0.0 {
+            *hz *= rate;
+
+            if *hz < floor {
+                *hz = 0.0;
+                Self::gate_off(sid, voice, wave);
+            } else {
+                Self::set_freq(sid, voice, *hz);
+            }
+        }
     }
 }
