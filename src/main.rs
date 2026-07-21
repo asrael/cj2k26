@@ -146,8 +146,9 @@ impl Cj2k26 {
     }
 
     fn unlock_audio(&mut self) {
-        if let Some(sfx) = &self.sfx {
-            sfx.resume();
+        match &self.sfx {
+            Some(sfx) => sfx.resume(),
+            None => self.sfx = Some(Sfx::new()),
         }
     }
 
@@ -500,7 +501,6 @@ impl ApplicationHandler for Cj2k26 {
         self.palette = Palette::from_ase(sprites.palette());
         self.player = Player::new(&sprites, 2.0);
         self.rng = Rng::default();
-        self.sfx = Some(Sfx::new());
         self.starfield = Starfield::new(60, &mut self.rng);
         self.window = Some(window.clone());
 
@@ -622,32 +622,21 @@ fn bind_key(code: KeyCode) -> Option<Action> {
 }
 
 fn main() {
+    let event_loop = EventLoop::new().expect("failed to create event loop");
+
     #[cfg(not(target_arch = "wasm32"))]
     {
-        desktop_main()
+        env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+        event_loop
+            .run_app(&mut Cj2k26::default())
+            .expect("failed to run app");
     }
+
     #[cfg(target_arch = "wasm32")]
     {
-        web_main()
+        use winit::platform::web::EventLoopExtWebSys;
+
+        console_error_panic_hook::set_once();
+        event_loop.spawn_app(Cj2k26::default());
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn desktop_main() {
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
-
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    let mut cj2k26 = Cj2k26::default();
-
-    event_loop.run_app(&mut cj2k26).expect("failed to run app");
-}
-
-#[cfg(target_arch = "wasm32")]
-fn web_main() {
-    use winit::platform::web::EventLoopExtWebSys;
-
-    console_error_panic_hook::set_once();
-
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    event_loop.spawn_app(Cj2k26::default());
 }

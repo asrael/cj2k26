@@ -1,6 +1,7 @@
 use crate::color::Palette;
 use crate::color::db32::{LIGHT_RED, PINK, PURPLE};
 use crate::gfx;
+use crate::math;
 use crate::rng::Rng;
 use crate::sprite::Sprite;
 use crate::{GAME_H, GAME_W};
@@ -12,18 +13,13 @@ use glam::Vec2;
 
 const ROT_STEPS: f32 = 16.0;
 
-fn bezier(p: [Vec2; 4], t: f32) -> Vec2 {
-    let u = 1.0 - t;
-    u * u * u * p[0] + 3.0 * u * u * t * p[1] + 3.0 * u * t * t * p[2] + t * t * t * p[3]
-}
-
 #[derive(Default)]
 enum State {
     Dive {
         path: [Vec2; 4],
-        t: f32,
         fired: u32,
         shots: u32,
+        t: f32,
     },
     #[default]
     Formation,
@@ -99,9 +95,9 @@ impl Enemy {
 
         self.state = State::Dive {
             path,
-            t: 0.0,
             fired: 0,
             shots,
+            t: 0.0,
         };
     }
 
@@ -119,9 +115,9 @@ impl Enemy {
 
             State::Dive {
                 path,
-                t,
                 fired,
                 shots,
+                t,
             } => {
                 *t += 1.0 / 240.0;
 
@@ -129,7 +125,7 @@ impl Enemy {
                     self.pos = self.base;
                     self.state = State::Formation;
                 } else {
-                    self.pos = bezier(*path, *t);
+                    self.pos = math::bezier(*path, *t);
 
                     let center = self.pos + self.sprite.size.as_vec2() / 2.0;
                     let facing = self.step.normalize_or_zero();
