@@ -146,9 +146,8 @@ impl Cj2k26 {
     }
 
     fn unlock_audio(&mut self) {
-        match &self.sfx {
-            Some(sfx) => sfx.resume(),
-            None => self.sfx = Some(Sfx::new()),
+        if let Some(sfx) = &mut self.sfx {
+            sfx.resume();
         }
     }
 
@@ -501,6 +500,7 @@ impl ApplicationHandler for Cj2k26 {
         self.palette = Palette::from_ase(sprites.palette());
         self.player = Player::new(&sprites, 2.0);
         self.rng = Rng::default();
+        self.sfx = Some(Sfx::new());
         self.starfield = Starfield::new(60, &mut self.rng);
         self.window = Some(window.clone());
 

@@ -1,7 +1,7 @@
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{OutputCallbackInfo, Stream};
+use cpal::{Device, OutputCallbackInfo, Stream, SupportedStreamConfig};
 use resid::{ChipModel, PAL_CLOCK, SamplingMethod, Sid};
 
 const GATE: u8 = 0x01;
@@ -19,9 +19,17 @@ enum Sound {
     Win,
 }
 
+struct Pending {
+    config: SupportedStreamConfig,
+    device: Device,
+    rx: Receiver<Sound>,
+    sid: Sid,
+}
+
 pub struct Sfx {
+    pending: Option<Pending>,
+    stream: Option<Stream>,
     tx: Sender<Sound>,
-    stream: Stream,
 }
 
 impl Sfx {
@@ -34,17 +42,46 @@ impl Sfx {
             .default_output_config()
             .expect("no default audio config");
 
-        let channels = config.channels() as usize;
-        let sample_rate = config.sample_rate();
-        let mut scratch: Vec<i16> = Vec::new();
         let mut sid = Sid::new(ChipModel::Mos6581);
         let (tx, rx) = channel::<Sound>();
 
-        sid.set_sampling_parameters(SamplingMethod::ResampleFast, PAL_CLOCK, sample_rate);
+        sid.set_sampling_parameters(SamplingMethod::ResampleFast, PAL_CLOCK, config.sample_rate());
         Self::set_volume(&mut sid, 0x0F);
         Self::set_envelope(&mut sid, 0, 0x06, 0x00);
         Self::set_envelope(&mut sid, 1, 0x06, 0x00);
         Self::set_envelope(&mut sid, 2, 0x08, 0xA9);
+
+        Self {
+            pending: Some(Pending {
+                config,
+                device,
+                rx,
+                sid,
+            }),
+            stream: None,
+            tx,
+        }
+    }
+
+    pub fn resume(&mut self) {
+        if let Some(stream) = &self.stream {
+            let _ = stream.play();
+            return;
+        }
+
+        let Some(Pending {
+            config,
+            device,
+            rx,
+            mut sid,
+        }) = self.pending.take()
+        else {
+            return;
+        };
+
+        let channels = config.channels() as usize;
+        let sample_rate = config.sample_rate();
+        let mut scratch: Vec<i16> = Vec::new();
 
         let mut enemy_shoot_hz: f32 = 0.0;
         let mut explosion_hz: f32 = 0.0;
@@ -172,12 +209,7 @@ impl Sfx {
             .expect("failed to build audio stream");
 
         stream.play().expect("failed to start audio stream");
-
-        Self { tx, stream }
-    }
-
-    pub fn resume(&self) {
-        let _ = self.stream.play();
+        self.stream = Some(stream);
     }
 
     pub fn enemy_shoot(&self) {
